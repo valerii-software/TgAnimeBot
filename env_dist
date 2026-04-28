@@ -6,8 +6,6 @@ ADMIN_ID=your_telegram_id
 
 BOT_TOKEN=your_bot_token
 
-DB_URL=postgresql+asyncpg://your_username:your_password@localhost:5432/your_database
-
 PG_USER=your_username
 PG_PASSWORD=your_password
 PG_DATABASE=your_database

@@ -1,45 +1,29 @@
-import os.path
+import httpx
 
-import requests
-
-
-ANILIBRIA_URL = "http://anilibria.tv"
-ANILIBRIA_URL_CACHE = "http://cache.libria.fun"
-API_ROUTE = "http://api.anilibria.tv/v3/"
+API_BASE = "https://anilibria.top/api/v1/"
+ANILIBRIA_BASE = "https://anilibria.top"
 
 
-def get_list_of_anime_by_name(user_input: str):
-    request = API_ROUTE + f"title/search?search={user_input}"
-    response = requests.get(url=request, headers={'Accept': 'application/json'})
-    return response.json()['list']
+async def search_releases(user_input: str) -> list[dict]:
+    async with httpx.AsyncClient() as client:
+        response = await client.get(
+            API_BASE + "anime/catalog/releases",
+            params={"f[search]": user_input, "limit": 10},
+        )
+        response.raise_for_status()
+        return response.json()["data"]
 
 
-def get_anime_titles(anime_objs: list) -> list[tuple]:
-    return [(title['names']['ru'], title['id']) for title in anime_objs]
+def get_anime_titles(releases: list[dict]) -> list[tuple[str, int]]:
+    return [(r["name"]["main"], r["id"]) for r in releases]
 
 
-def get_anime_content_by_id(anime_id: int):
-    request = API_ROUTE + f"title?id={anime_id}"
-    response = requests.get(url=request, headers={'Accept': 'application/json'})
-    return response.json()
+def get_poster_url(release: dict) -> str:
+    return ANILIBRIA_BASE + release["poster"]["src"]
 
 
-def get_anime_series_by_num(anime_id: int, series_num: int):
-    request = API_ROUTE + f"title?id={anime_id}&filter=code,player.list.{series_num}.hls"
-    response = requests.get(url=request, headers={'Accept': 'application/json'}).json()
-
-    anime_code = response["code"]
-    response = response["player"]["list"][int(series_num)]["hls"]
-
-    file_url = response.get("fhd") or response.get("hd") or response.get("sd")
-    file_url = ANILIBRIA_URL_CACHE + file_url
-
-    filename = "-".join([anime_code, series_num]) + ".m3u8"
-
-    script_path = os.path.abspath(__file__)
-    script_directory = os.path.dirname(script_path)
-    file_path = os.path.join(script_directory, "temp_m3u8", filename)
-    with open(file_path, 'wb') as ff:
-        ff.write(requests.get(file_url).content)
-
-    return file_path
+def get_external_player_url(release: dict) -> str | None:
+    url = release.get("external_player")
+    if not url:
+        return None
+    return "https:" + url if url.startswith("//") else url

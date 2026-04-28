@@ -1,26 +1,51 @@
 version: '3.8'
 services:
+  db:
+    image: postgres:16
+    restart: always
+    environment:
+      POSTGRES_USER: ${PG_USER}
+      POSTGRES_PASSWORD: ${PG_PASSWORD}
+      POSTGRES_DB: ${PG_DATABASE}
+    ports:
+      - 5433:5432
+    volumes:
+      - ./data:/var/lib/postgresql/data
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PG_USER} -d ${PG_DATABASE}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: alembic upgrade head
+    env_file: .env
+    environment:
+      PG_HOST: db
+      PG_PORT: 5432
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - app-network
+
   app:
     build:
       context: .
       dockerfile: Dockerfile
-    command: bash -c "alembic upgrade head && python main.py"
-    depends_on:
-      - db
-    networks:
-      - app-network
-
-  db:
-    image: postgres
-    restart: always
+    command: python main.py
+    env_file: .env
     environment:
-      POSTGRES_USER: your_username
-      POSTGRES_PASSWORD: your_password
-      POSTGRES_DB: your_database
-    ports:
-      - 5432:5432
-    volumes:
-      - ./data:/var/lib/postgresql/data
+      PG_HOST: db
+      PG_PORT: 5432
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
     networks:
       - app-network
 

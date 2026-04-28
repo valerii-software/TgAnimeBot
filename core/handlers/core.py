@@ -1,67 +1,78 @@
-import os
+import logging
 
-from aiogram import Bot
+from aiogram import Router
+from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import Message, CallbackQuery, FSInputFile
+from aiogram.types import Message, CallbackQuery
 
-from core.handlers.utils.utils import get_list_of_anime_by_name, get_anime_titles, get_anime_content_by_id, \
-    ANILIBRIA_URL, get_anime_series_by_num
-from core.keyboards.inline import get_anime_titles_keyboard, get_series_keyboard
-from core.utils.callback_data import CallbackAnimeTitle, CallbackSeriesKeyboard
+from core.handlers.utils.utils import (
+    search_releases, get_anime_titles, get_poster_url, get_external_player_url,
+)
+from core.keyboards.inline import get_anime_titles_keyboard, get_watch_keyboard
+from core.utils.callback_data import CallbackAnimeTitle
 from core.utils.states import StepsAnime
 
+router = Router()
 
+
+@router.message(Command("search"))
 async def get_search(message: Message, state: FSMContext):
-    await message.answer(text="<b>Введите название аниме:</b>", parse_mode='HTML')
+    await message.answer(text="<b>Введите название аниме:</b>", parse_mode="HTML")
     await state.set_state(StepsAnime.ANIME_NAME)
 
 
+@router.message(StepsAnime.ANIME_NAME)
 async def get_found_anime(message: Message, state: FSMContext):
-    anime_found = get_list_of_anime_by_name(user_input=message.text)
-    anime_titles = get_anime_titles(anime_found)
-    if anime_titles:
+    await state.set_state(None)  # clear state but keep data
+    try:
+        releases = await search_releases(user_input=message.text)
+        if not releases:
+            await message.answer(text="<b>Ничего не найдено 😿</b>", parse_mode="HTML")
+            return
+        # store releases in state data for later retrieval by ID
+        await state.update_data(releases={str(r["id"]): r for r in releases})
+        anime_titles = get_anime_titles(releases)
         await message.answer(text="Вот что удалось найти:", reply_markup=get_anime_titles_keyboard(anime_titles))
-    else:
-        await message.answer(text="<b>Ничего не найдено 😿</b>", parse_mode='HTML')
-    await state.clear()
+    except Exception:
+        logging.exception("Error in get_found_anime")
+        await message.answer(text="<b>Ошибка при поиске. Попробуйте позже.</b>", parse_mode="HTML")
 
 
-async def get_anime(call: CallbackQuery, callback_data: CallbackAnimeTitle):
-    content = get_anime_content_by_id(anime_id=callback_data.anime_id)
-    anime_name = content['names']['ru']
-    anime_description = content['description'].replace("\n\n\n", "\n").replace("\n\n", "\n")
-    anime_genres = ", ".join(content['genres'])
-    anime_series = content['player']['episodes']['string']
+@router.callback_query(CallbackAnimeTitle.filter())
+async def get_anime(call: CallbackQuery, callback_data: CallbackAnimeTitle, state: FSMContext):
+    try:
+        data = await state.get_data()
+        release = data.get("releases", {}).get(str(callback_data.anime_id))
+        if not release:
+            await call.answer("Данные устарели. Выполните поиск заново.", show_alert=True)
+            return
 
-    anime_thumbnail = ANILIBRIA_URL + content['posters']['small']['url']
+        name = release["name"]["main"]
+        description = release.get("description") or "Нет описания"
+        genres = ", ".join(g["name"] for g in release.get("genres", []))
+        episodes_total = release.get("episodes_total")
+        episodes_str = str(episodes_total) if episodes_total else "Нет данных"
 
-    caption_content = "\n".join([
-        "<b>Жанр:</b> " + anime_genres,
-        "<b>Название:</b> " + anime_name,
-        "<b>Серии:</b> " + anime_series,
-        "<b>Описание:</b> " + anime_description[:2000],
-        "\n<b>Выберите серию:</b>"
-    ])
+        header = "\n".join([
+            f"<b>Жанр:</b> {genres}",
+            f"<b>Название:</b> {name}",
+            f"<b>Серий:</b> {episodes_str}",
+            "<b>Описание:</b> ",
+        ])
+        max_desc = 1024 - len(header) - 3  # 3 for "..."
+        if len(description) > max_desc:
+            description = description[:max_desc] + "..."
+        caption = header + description
 
-    anime_id = content['id']
-    start_pagination, end_pagination = map(int, anime_series.split("-"))
-    current = start_pagination
-    callback_data = CallbackSeriesKeyboard(anime_id=anime_id, current=current, start_pagination=start_pagination, end_pagination=end_pagination)
+        player_url = get_external_player_url(release)
+        keyboard = get_watch_keyboard(player_url) if player_url else None
 
-    await call.message.answer_photo(
-        photo=anime_thumbnail,
-        caption=caption_content,
-        reply_markup=get_series_keyboard(callback_data),
-        parse_mode='HTML')
-
-
-async def get_anime_title(call: CallbackQuery, callback_data: CallbackSeriesKeyboard):
-    await call.message.edit_reply_markup(reply_markup=get_series_keyboard(callback_data))
-
-
-async def get_anime_series(call: CallbackQuery, callback_data: CallbackSeriesKeyboard):
-    filepath = get_anime_series_by_num(
-        anime_id=callback_data.anime_id, series_num=callback_data.series_num)
-    file = FSInputFile(path=filepath)
-    await call.message.answer_document(document=file)
-    os.remove(filepath)
+        await call.message.answer_photo(
+            photo=get_poster_url(release),
+            caption=caption,
+            reply_markup=keyboard,
+            parse_mode="HTML",
+        )
+    except Exception:
+        logging.exception("Error in get_anime")
+        await call.answer("Ошибка при загрузке аниме. Попробуйте позже.", show_alert=True)
